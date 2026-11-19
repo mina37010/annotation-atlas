@@ -1,4 +1,5 @@
 import { parseManifest, demoManifest, httpURL, idOf } from './iiif.js';
+import { masonryLayout } from './layout.js';
 const $ = id => document.getElementById(id);
 let collection = null, filtered = [], selected = 0, generation = 0, controller;
 let size = 205, query = '', showText = false, renderFrame;
@@ -40,25 +41,19 @@ function render() {
   $('empty-message').textContent = collection.crops.length ? '一致するAnnotationがありません' : '切り抜き可能なAnnotationがありません';
   $('clear-search').hidden = !collection.crops.length;
   $('empty-import').hidden = Boolean(collection.crops.length);
-  const available = gallery.clientWidth, gap = 4;
+  const available = gallery.clientWidth;
   if (!available) return;
-  // Justified rows fill the entire width, preserving each region's aspect ratio.
   const target = window.innerWidth < 700 ? Math.min(size, 150) : size;
-  let row = [], ratio = 0;
+  const layout = masonryLayout(filtered, available, target);
+  gallery.style.height = `${layout.height}px`;
   const fragment = document.createDocumentFragment();
-  function flush(last = false) {
-    if (!row.length) return;
-    const ideal = (available - gap * (row.length - 1)) / ratio;
-    const height = last ? Math.min(target, ideal) : ideal;
-    const el = document.createElement('div'); el.className = 'gallery-row';
-    row.forEach(({ item, index }) => el.append(makeTile(item, index, height * item.ratio, height)));
-    fragment.append(el); row = []; ratio = 0;
+  for (const tile of layout.tiles) {
+    const button = makeTile(filtered[tile.index], tile.index, tile.width, tile.height);
+    button.style.left = `${tile.left}px`;
+    button.style.top = `${tile.top}px`;
+    fragment.append(button);
   }
-  filtered.forEach((item,index) => {
-    row.push({ item,index }); ratio += item.ratio;
-    if (ratio * target + gap * (row.length - 1) >= available) flush();
-  });
-  flush(true); gallery.append(fragment);
+  gallery.append(fragment);
 }
 function scheduleRender() { cancelAnimationFrame(renderFrame); renderFrame = requestAnimationFrame(render); }
 function showDetail(index) {
@@ -140,5 +135,9 @@ document.addEventListener('keydown', event => {
   if (event.key === '/' && !typing && !$('import-dialog').open && !$('detail-dialog').open) { event.preventDefault(); $('search').focus(); }
   if ($('detail-dialog').open) { if (event.key === 'ArrowLeft') { event.preventDefault(); showDetail(selected-1); } if (event.key === 'ArrowRight') { event.preventDefault(); showDetail(selected+1); } }
 });
-new ResizeObserver(scheduleRender).observe($('gallery'));
+let galleryWidth = 0;
+new ResizeObserver(entries => {
+  const width = entries[0].contentRect.width;
+  if (width !== galleryWidth) { galleryWidth = width; scheduleRender(); }
+}).observe($('gallery'));
 load(demoManifest(), '', true);

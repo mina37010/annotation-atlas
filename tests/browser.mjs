@@ -10,6 +10,10 @@ try {
   assert.equal(response.status(),200);
   await page.locator('.tile').last().waitFor();
   assert.equal(await page.locator('.tile').count(),24);
+  const bounds = await page.locator('.tile').evaluateAll(tiles => tiles.map(tile => ({ left: tile.offsetLeft, top: tile.offsetTop, width: tile.getBoundingClientRect().width, height: tile.getBoundingClientRect().height })));
+  assert.ok(new Set(bounds.map(tile => Math.round(tile.width))).size > 2);
+  assert.ok(new Set(bounds.filter(tile => tile.top > 0).map(tile => Math.round(tile.top))).size > 6);
+  await page.waitForFunction(() => [...document.querySelectorAll('.tile img')].slice(0,12).every(img => img.complete));
   await page.screenshot({ path:'/private/tmp/annotation-atlas-desktop.png', fullPage:true });
   await page.locator('#search').fill('architecture');
   await page.waitForFunction(() => document.querySelectorAll('.tile').length === 4);

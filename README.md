@@ -19,6 +19,8 @@ http://localhost:5180 を開きます。
 - 上部の検索はAnnotation本文を対象とする部分一致。空白区切りでAND検索。大文字小文字・全角半角を正規化します。
 - 検索中は一致した本文を画像に重ねて表示。通常時は「テキスト」スイッチまたはホバーで表示。
 - 画像を選択すると本文と元解像度の切り抜きを表示。左右キーで前後に移動、Escで閉じる。
+- 詳細画面から切り抜き画像と画像URLをコピー。画像コピーはPNG形式で、HTTPS（またはlocalhost）とClipboard APIに対応したブラウザ、画像のCORS許可が必要です。
+- 「Miradorで開く」で元のManifestの該当ページへ移動し、選択領域を枠で表示・拡大。ファイルから読み込んだManifestもそのまま渡します。Miradorはアプリに同梱しています。
 - スライダーで一覧の画像サイズを変更。`/`で検索欄へ移動。
 - 初期表示はIIIF CookbookのGöttingen写真を使った24領域のサンプルです。Annotation本文はデモ用に作成したものです。
 
@@ -45,3 +47,5 @@ npm run build
 ```
 
 仕様参考 [Presentation v3](https://iiif.io/api/presentation/3.0/)、[Presentation v2](https://iiif.io/api/presentation/2.1/)、[Image API](https://iiif.io/api/image/3.0/)。
+
+Mirador 3.3.0とライセンスを`dist/vendor/`に同梱しています。[Mirador](https://github.com/ProjectMirador/mirador)はApache License 2.0で配布されています。

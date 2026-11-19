@@ -126,7 +126,7 @@ export async function parseManifest(manifest, { baseURL = '', fetchJSON, signal,
                 const pixel = [(left - viewport[0]) * iw / viewport[2], (top - viewport[1]) * ih / viewport[3], (right - left) * iw / viewport[2], (bottom - top) * ih / viewport[3]].map(Math.round);
                 if (pixel[2] < 1 || pixel[3] < 1) continue;
                 const text = textOf(anno.body ?? anno.resource);
-                local.push({ id: idOf(anno), key: `${index}-${local.length}`, text, canvas: canvasId, page: labelOf(canvas.label) || `Canvas ${index + 1}`, region: pixel, url: cropURL(serviceURL, pixel), fullURL: cropURL(serviceURL, pixel, Math.max(pixel[2], 1)), ratio: pixel[2] / pixel[3] });
+                local.push({ id: idOf(anno), key: `${index}-${local.length}`, text, canvas: canvasId, canvasIndex: index, canvasRegion: [left, top, right - left, bottom - top], page: labelOf(canvas.label) || `Canvas ${index + 1}`, region: pixel, url: cropURL(serviceURL, pixel), fullURL: cropURL(serviceURL, pixel, Math.max(pixel[2], 1)), ratio: pixel[2] / pixel[3] });
               }
             }
           }

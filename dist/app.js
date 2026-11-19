@@ -1,8 +1,11 @@
 import { parseManifest, demoManifest, httpURL, idOf } from './iiif.js';
 import { masonryLayout } from './layout.js';
+import { copyImage, copyURL } from './clipboard.js';
+import { openMirador } from './mirador.js';
 const $ = id => document.getElementById(id);
 let collection = null, filtered = [], selected = 0, generation = 0, controller;
 let size = 205, query = '', showText = false, renderFrame;
+let detailRevision = 0, miradorController, miradorSession;
 const normalize = text => text.normalize('NFKC').toLocaleLowerCase();
 function highlight(element, text) {
   element.replaceChildren();
@@ -58,6 +61,9 @@ function render() {
 function scheduleRender() { cancelAnimationFrame(renderFrame); renderFrame = requestAnimationFrame(render); }
 function showDetail(index) {
   if (!filtered.length) return;
+  detailRevision++;
+  $('detail-status').hidden = true;
+  $('copy-image').disabled = false; $('copy-url').disabled = false;
   selected = Math.max(0,Math.min(filtered.length - 1,index));
   const item = filtered[selected];
   $('detail-img').src = item.fullURL; $('detail-img').alt = item.text || item.page;
@@ -67,8 +73,6 @@ function showDetail(index) {
   $('detail-position').textContent = `${selected+1} / ${filtered.length}`;
   $('previous').disabled = selected === 0; $('next').disabled = selected === filtered.length-1;
   $('image-link').href = item.fullURL;
-  const canvasURL = httpURL(item.canvas); $('canvas-link').hidden = !canvasURL;
-  if (canvasURL) $('canvas-link').href = canvasURL;
   if (!$('detail-dialog').open) $('detail-dialog').showModal();
 }
 async function load(manifest, baseURL, sample = false, token = ++generation) {
@@ -78,7 +82,7 @@ async function load(manifest, baseURL, sample = false, token = ++generation) {
   try {
     const result = await parseManifest(manifest, { baseURL: httpURL(idOf(manifest), baseURL) || baseURL, signal, onProgress: (done,total) => { if (token === generation) setStatus(`Annotationを読み込み中　${done} / ${total} Canvas`, { loading: true }); } });
     if (token !== generation) return;
-    collection = result; query = ''; $('search').value = '';
+    collection = { ...result, sourceManifest: manifest, sourceBase: httpURL(idOf(manifest), baseURL) || baseURL }; query = ''; $('search').value = '';
     $('collection-name').textContent = result.title;
     $('sample-badge').hidden = !sample;
     $('attribution').textContent = result.attribution || '';
@@ -131,10 +135,43 @@ $('show-text').addEventListener('change', event => { showText = event.target.che
 $('size').addEventListener('input', event => { size = Number(event.target.value); scheduleRender(); });
 $('previous').addEventListener('click', () => showDetail(selected-1));
 $('next').addEventListener('click', () => showDetail(selected+1));
+async function copySelected(kind) {
+  const item = filtered[selected];
+  if (!item) return;
+  const revision = detailRevision;
+  const button = $(kind === 'image' ? 'copy-image' : 'copy-url');
+  const status = $('detail-status');
+  button.disabled = true; status.hidden = false; status.dataset.error = 'false';
+  status.textContent = kind === 'image' ? '画像をコピー中…' : 'URLをコピー中…';
+  try {
+    await (kind === 'image' ? copyImage(item.fullURL) : copyURL(item.fullURL));
+    if (revision === detailRevision) status.textContent = kind === 'image' ? '画像をコピーしました' : '画像URLをコピーしました';
+  } catch (error) {
+    if (revision === detailRevision) {
+      status.dataset.error = 'true';
+      status.textContent = error.message.startsWith('このブラウザ') ? error.message : kind === 'image' ? '画像をコピーできません。画像の公開設定・CORS・クリップボードの許可を確認してください。' : 'URLをコピーできません。クリップボードの許可を確認してください。';
+    }
+  } finally { if (revision === detailRevision) button.disabled = false; }
+}
+$('copy-image').addEventListener('click', () => copySelected('image'));
+$('copy-url').addEventListener('click', () => copySelected('url'));
+$('open-mirador').addEventListener('click', async () => {
+  const item = filtered[selected];
+  if (!item || !collection) return;
+  miradorController?.abort(); miradorSession?.close();
+  miradorController = new AbortController(); const signal = miradorController.signal;
+  $('mirador-status').textContent = 'Miradorを読み込み中…'; $('mirador-status').hidden = false;
+  $('mirador-dialog').showModal();
+  try {
+    const session = await openMirador({ manifest: collection.sourceManifest, baseURL: collection.sourceBase, item, container: $('mirador-container'), signal, onViewer: () => { if (!signal.aborted) $('mirador-status').hidden = true; } });
+    if (signal.aborted) session?.close(); else miradorSession = session;
+  } catch (error) { if (!signal.aborted) { $('mirador-status').hidden = false; $('mirador-status').textContent = `Miradorを開けません。${error.message}`; } }
+});
+$('mirador-dialog').addEventListener('close', () => { miradorController?.abort(); miradorSession?.close(); miradorSession = null; });
 document.addEventListener('keydown', event => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
   if (event.key === '/' && !typing && !$('import-dialog').open && !$('detail-dialog').open) { event.preventDefault(); $('search').focus(); }
-  if ($('detail-dialog').open) { if (event.key === 'ArrowLeft') { event.preventDefault(); showDetail(selected-1); } if (event.key === 'ArrowRight') { event.preventDefault(); showDetail(selected+1); } }
+  if ($('detail-dialog').open && !$('mirador-dialog').open) { if (event.key === 'ArrowLeft') { event.preventDefault(); showDetail(selected-1); } if (event.key === 'ArrowRight') { event.preventDefault(); showDetail(selected+1); } }
 });
 let galleryWidth = 0;
 new ResizeObserver(entries => {

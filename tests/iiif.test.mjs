@@ -12,6 +12,7 @@ test('v3 scales Canvas regions to original image pixels and preserves annotation
   const result = await parseManifest(manifest([annotation()]));
   assert.equal(result.title, '資料'); assert.equal(result.crops.length, 1);
   assert.deepEqual(result.crops[0].region, [20,40,200,400]);
+  assert.deepEqual(result.crops[0].canvasRegion, [10,20,100,200]);
   assert.equal(result.crops[0].url, service + '/20,40,200,400/200,/0/default.jpg');
   assert.equal(result.crops[0].text, '猫の絵 cat');
 });
@@ -50,6 +51,7 @@ test('uses authoritative service info when the painting body is a derivative', a
 test('painting onto a Canvas subregion adjusts coordinates and clips to the image', async () => {
   const result = await parseManifest(manifest([annotation(canvasId+'#xywh=100,200,200,300')], { items:[{ type:'AnnotationPage', items:[{ type:'Annotation', target:canvasId+'#xywh=100,200,500,750', body }] }] }));
   assert.deepEqual(result.crops[0].region,[0,0,800,1200]);
+  assert.deepEqual(result.crops[0].canvasRegion,[100,200,200,300]);
 });
 test('rejects non-Manifests and unsafe URLs; generated crop never upscales', async () => {
   await assert.rejects(() => parseManifest({ type:'Collection',items:[] }), /Manifest/);

@@ -148,7 +148,7 @@ export async function parseManifest(manifest, { baseURL = '', fetchJSON, allowed
                 textCount += text.length;
                 if (text.length > 20000 || textCount > 5000000) throw new InputError('Annotation本文の合計量が上限を超えています。');
                 if (++cropCount > LIMITS.annotations) throw new InputError('切り抜き画像は5000件以下にしてください。');
-                local.push({ id: idOf(anno), key: `${index}-${local.length}`, text, canvas: canvasId, canvasIndex: index, canvasRegion: [left, top, right - left, bottom - top], page: plainText(labelOf(canvas.label)) || `Canvas ${index + 1}`, region: pixel, url: cropURL(serviceURL, pixel), fullURL: cropURL(serviceURL, pixel, Math.max(pixel[2], 1)), ratio: pixel[2] / pixel[3] });
+                local.push({ name: plainText(labelOf(anno.label)) || text, id: idOf(anno), key: `${index}-${local.length}`, text, canvas: canvasId, canvasIndex: index, canvasRegion: [left, top, right - left, bottom - top], page: plainText(labelOf(canvas.label)) || `Canvas ${index + 1}`, region: pixel, url: cropURL(serviceURL, pixel), fullURL: cropURL(serviceURL, pixel, Math.max(pixel[2], 1)), ratio: pixel[2] / pixel[3] });
               }
             }
           }

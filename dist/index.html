@@ -15,8 +15,8 @@
     <div class="searchline"><div class="searchbox"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" maxlength="256" placeholder="Annotationのテキストを検索" aria-label="Annotationのテキストを検索" autocomplete="off"></div><label class="text-switch"><span>テキスト</span><input id="show-text" type="checkbox"><span class="switch" aria-hidden="true"></span></label><div class="density"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><input type="range" id="size" min="100" max="360" value="205" aria-label="画像の表示サイズ"></div></div>
   </header>
   <main>
-    <div class="collection-bar"><div class="collection-title"><h1 id="collection-name">Annotation Atlas</h1><span id="sample-badge" class="sample-badge" hidden>サンプル</span></div><div class="collection-meta"><span id="count" aria-live="polite">0 images</span></div></div>
-    <div id="status" role="status" hidden></div>
+    <div class="collection-bar"><div class="collection-title"><h1 id="collection-name">Annotation Atlas</h1><span id="sample-badge" class="sample-badge" hidden>サンプル</span></div><div class="collection-meta"><span id="count" aria-live="polite">0 images</span><button id="download-all" class="outline" disabled>一括ダウンロード</button></div></div>
+    <div id="download-status" class="download-status" hidden><span id="download-message" role="status" aria-live="polite"></span><button id="cancel-download" class="quiet" hidden>中止</button></div><div id="status" role="status" hidden></div>
     <details id="warnings" hidden><summary></summary><ul></ul></details>
     <div id="gallery" class="gallery" aria-label="Annotation画像の一覧"></div>
     <div id="empty" class="empty" hidden><span aria-hidden="true">⌕</span><p id="empty-message">一致するAnnotationがありません</p><button id="clear-search" class="outline">検索をクリア</button><button id="empty-import" class="outline" hidden>Manifestを読み込む</button></div>

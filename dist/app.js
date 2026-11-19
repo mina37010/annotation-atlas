@@ -1,3 +1,4 @@
+import { downloadArchive, safeFilename } from './download.js';
 import { LIMITS, InputError, validateJSON, parseJSON, collectOrigins, createNetwork } from './security.js';
 import { createImages } from './images.js';
 import { parseManifest, demoManifest, httpURL, idOf } from './iiif.js';
@@ -7,7 +8,7 @@ import { openMirador } from './mirador.js';
 const $ = id => document.getElementById(id);
 let collection = null, filtered = [], selected = 0, generation = 0, controller;
 let size = 205, query = '', showText = false, renderFrame;
-let detailRevision = 0, miradorController, miradorSession;
+let detailRevision = 0, miradorController, miradorSession, downloadController;
 const normalize = text => text.normalize('NFKC').toLocaleLowerCase();
 function highlight(element, text) {
   element.replaceChildren();
@@ -41,6 +42,7 @@ function render() {
   const terms = [...new Set(normalize(query.trim()).split(/\s+/u).filter(Boolean))];
   filtered = collection.crops.filter(item => { const text = normalize(item.text); return terms.every(term => text.includes(term)); });
   $('count').textContent = terms.length ? `${filtered.length.toLocaleString()} / ${collection.crops.length.toLocaleString()} images` : `${filtered.length.toLocaleString()} images`;
+  updateDownloadButton();
   const gallery = $('gallery'); gallery.classList.toggle('show-text', showText); gallery.classList.toggle('searching', Boolean(terms.length));
   collection.images.clearObservers();
   gallery.replaceChildren();
@@ -80,6 +82,7 @@ function showDetail(index) {
   if (!$('detail-dialog').open) $('detail-dialog').showModal();
 }
 async function load(manifest, baseURL, sample = false, token = ++generation) {
+  downloadController?.abort();
   controller?.abort(); controller = new AbortController(); const signal = controller.signal;
   $('import-dialog').close(); $('detail-dialog').close(); $('mirador-dialog').close();
   setStatus('Annotationを読み込み中…', { loading: true });
@@ -174,6 +177,32 @@ async function copySelected(kind) {
     }
   } finally { if (revision === detailRevision) button.disabled = false; }
 }
+function updateDownloadButton() {
+  $('download-all').disabled = Boolean(downloadController) || !filtered.length;
+  $('download-all').textContent = query.trim() ? '検索結果をダウンロード' : '一括ダウンロード';
+}
+$('cancel-download').addEventListener('click', () => downloadController?.abort());
+$('download-all').addEventListener('click', async () => {
+  if (!collection || !filtered.length || downloadController) return;
+  const snapshot = [...filtered], source = collection;
+  const task = new AbortController(); downloadController = task;
+  updateDownloadButton();
+  $('download-status').hidden = false; $('cancel-download').hidden = false;
+  $('download-message').textContent = `画像を取得中　0 / ${snapshot.length}`;
+  try {
+    const blob = await downloadArchive(snapshot, source.origins, { signal:task.signal, onProgress:(done,total) => { if (downloadController === task) $('download-message').textContent = `画像を取得中　${done} / ${total}`; } });
+    if (task.signal.aborted) return;
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = safeFilename(source.title, 'annotations') + '.zip';
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    $('download-message').textContent = `${snapshot.length}件の画像をZIPにまとめました`;
+  } catch(error) {
+    $('download-message').textContent = task.signal.aborted ? 'ダウンロードを中止しました' : error.message;
+  } finally {
+    if (downloadController === task) { downloadController = null; $('cancel-download').hidden = true; updateDownloadButton(); }
+  }
+});
 $('copy-image').addEventListener('click', () => copySelected('image'));
 $('copy-url').addEventListener('click', () => copySelected('url'));
 $('open-mirador').addEventListener('click', async () => {

@@ -29,6 +29,14 @@ try {
   await page.locator('#search').fill('architecture');
   await page.waitForFunction(() => document.querySelectorAll('.tile').length === 4);
   assert.ok(await page.locator('.tile mark').count() > 0);
+  assert.equal(await page.locator('#download-all').textContent(),'検索結果をダウンロード');
+  const downloadPromise=page.waitForEvent('download');
+  await page.locator('#download-all').click();
+  const archive=await downloadPromise;
+  assert.ok(archive.suggestedFilename().endsWith('.zip'));
+  await archive.saveAs('/private/tmp/annotation-atlas-bulk.zip');
+  await page.waitForFunction(()=>document.querySelector('#download-message').textContent.includes('4件の画像'));
+  assert.equal(await page.locator('#cancel-download').isVisible(),false);
   await page.locator('.tile').first().click();
   assert.equal(await page.locator('#detail-dialog').evaluate(el => el.open),true);
   assert.match(await page.locator('#detail-text').textContent(), /architecture/);

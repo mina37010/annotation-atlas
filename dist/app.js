@@ -81,7 +81,8 @@ async function load(manifest, baseURL, sample = false, token = ++generation) {
     collection = result; query = ''; $('search').value = '';
     $('collection-name').textContent = result.title;
     $('sample-badge').hidden = !sample;
-    $('attribution').textContent = result.attribution || 'IIIF ANNOTATION EXPLORER';
+    $('attribution').textContent = result.attribution || '';
+    $('attribution').closest('footer').hidden = !result.attribution;
     const warnings = [...new Set(result.warnings)];
     $('warnings').hidden = !warnings.length;
     $('warnings').querySelector('summary').textContent = `${warnings.length}件の読み込みメモ`;

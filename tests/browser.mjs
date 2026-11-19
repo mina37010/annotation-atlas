@@ -2,19 +2,29 @@ import { chromium } from '../../iiif-ocr-annotation-editor/node_modules/playwrig
 import assert from 'node:assert/strict';
 import { demoManifest } from '../dist/iiif.js';
 const browser = await chromium.launch({ executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless:true });
-const page = await browser.newPage({ viewport:{ width:1440, height:1000 } });
+const context = await browser.newContext({ viewport:{ width:1440, height:1000 } });
+const page = await context.newPage();
 await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
 const errors = [];
+const consoleErrors=[]; page.on('console',message=>{if(message.type()==='error')consoleErrors.push(message.text());});
+const viewerFrame = () => page.frames().find(frame => frame.parentFrame() === page.mainFrame());
+async function approveNetwork() { await page.locator('#network-dialog').waitFor({state:'visible'}); await page.locator('#approve-network').click(); }
+const clipboardPage = await page.context().newPage();
+await clipboardPage.route('**/clipboard-check', route => route.fulfill({contentType:'text/html',body:'<!doctype html><title>Clipboard test</title>'}));
+await clipboardPage.goto('http://127.0.0.1:5180/clipboard-check');
+await page.bringToFront();
 page.on('pageerror', error => errors.push(error.message));
 try {
   const response = await page.goto('http://127.0.0.1:5180');
   assert.equal(response.status(),200);
+  assert.match(response.headers()['content-security-policy'], /script-src 'self'/);
+  assert.equal(response.headers()['x-content-type-options'],'nosniff');
   await page.locator('.tile').last().waitFor();
   assert.equal(await page.locator('.tile').count(),24);
   const bounds = await page.locator('.tile').evaluateAll(tiles => tiles.map(tile => ({ left: tile.offsetLeft, top: tile.offsetTop, width: tile.getBoundingClientRect().width, height: tile.getBoundingClientRect().height })));
   assert.ok(new Set(bounds.map(tile => Math.round(tile.width))).size > 2);
   assert.ok(new Set(bounds.filter(tile => tile.top > 0).map(tile => Math.round(tile.top))).size > 6);
-  await page.waitForFunction(() => [...document.querySelectorAll('.tile img')].slice(0,12).every(img => img.complete));
+  await page.waitForFunction(() => [...document.querySelectorAll('.tile img')].slice(0,12).every(img => img.complete && img.naturalWidth > 0));
   await page.screenshot({ path:'/private/tmp/annotation-atlas-desktop.png', fullPage:true });
   await page.locator('#search').fill('architecture');
   await page.waitForFunction(() => document.querySelectorAll('.tile').length === 4);
@@ -24,15 +34,23 @@ try {
   assert.match(await page.locator('#detail-text').textContent(), /architecture/);
   await page.locator('#copy-url').click();
   await page.waitForFunction(() => document.querySelector('#detail-status').textContent === '画像URLをコピーしました');
-  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), await page.locator('#image-link').getAttribute('href'));
+  assert.equal(await clipboardPage.evaluate(() => navigator.clipboard.readText()), await page.locator('#image-link').getAttribute('href'));
   await page.locator('#copy-image').click();
   await page.waitForFunction(() => document.querySelector('#detail-status').textContent === '画像をコピーしました', { timeout:30000 });
-  assert.ok(await page.evaluate(async () => (await navigator.clipboard.read()).some(item => item.types.includes('image/png'))));
+  assert.ok(await clipboardPage.evaluate(async () => (await navigator.clipboard.read()).some(item => item.types.includes('image/png'))));
   assert.equal(await page.locator('#canvas-link').count(), 0);
   await page.locator('#open-mirador').click();
-  await page.locator('.mirador-selected-region').waitFor({ state:'visible', timeout:45000 });
-  await page.waitForFunction(() => document.querySelector('.mirador-selected-region')?.getBoundingClientRect().width > 50);
-  await page.waitForTimeout(800);
+  await page.frameLocator('#mirador-container iframe').locator('.mirador-selected-region').waitFor({ state:'visible', timeout:45000 });
+  await viewerFrame().waitForFunction(() => document.querySelector('.mirador-selected-region')?.getBoundingClientRect().width > 50);
+  assert.equal(await page.locator('#mirador-container iframe').getAttribute('sandbox'),'allow-scripts');
+  assert.equal(await viewerFrame().evaluate(() => { try { return parent.document.body.tagName; } catch(error) { return error.name; } }), 'SecurityError');
+  assert.equal(await viewerFrame().evaluate(async () => { try { await fetch('https://unapproved.example/steal'); return true; } catch { return false; } }),false);
+  await viewerFrame().waitForFunction(() => [...document.querySelectorAll('canvas')].some(canvas => {
+    const context = canvas.getContext('2d'); if (!context || !canvas.width || !canvas.height) return false;
+    const pixels = context.getImageData(0,0,canvas.width,canvas.height).data;
+    for(let i=0;i<pixels.length;i+=128) if(Math.max(pixels[i],pixels[i+1],pixels[i+2])-Math.min(pixels[i],pixels[i+1],pixels[i+2])>25) return true;
+    return false;
+  }), {timeout:30000});
   await page.screenshot({ path:'/private/tmp/annotation-atlas-mirador.png' });
   await page.locator('[data-close="mirador-dialog"]').click();
   await page.keyboard.press('ArrowRight');
@@ -47,6 +65,7 @@ try {
   await page.locator('#open-import').click();
   const fixture = demoManifest(); fixture.label = { ja:['ブラウザテスト資料'] };
   await page.locator('#manifest-file').setInputFiles({ name:'manifest.json', mimeType:'application/json', buffer:Buffer.from(JSON.stringify(fixture)) });
+  await approveNetwork();
   await page.waitForFunction(() => document.querySelector('#collection-name').textContent === 'ブラウザテスト資料');
   assert.equal(await page.locator('#sample-badge').isVisible(),false);
   await page.locator('#open-import').click();
@@ -56,8 +75,10 @@ try {
   // Remote Manifest URL plus external annotation page, real HTTP failure, and HTML sanitization.
   const remote = demoManifest(); remote.label = { ja:['URLテスト'] };
   const annos = remote.items[0].annotations[0];
-  annos.items[0].body = { type:'TextualBody', format:'text/html', value:'<b>猫</b><script>window.injected=true</script>' };
+  annos.items[0].body = { type:'TextualBody', format:'text/html', value:'<b>猫</b><img src="https://tracker.example/pixel" onerror="window.injected=true"><script>window.injected=true</script>' };
   remote.items[0].annotations = [{ id:'https://fixture.example/annotations.json',type:'AnnotationPage' }];
+  let trackerRequests=0;
+  await page.route('https://tracker.example/**', async route=>{trackerRequests++;await route.abort();});
   await page.route('https://fixture.example/**', async route => {
     if (route.request().url().endsWith('missing.json')) return route.fulfill({ status:404,body:'Not found',headers:{'access-control-allow-origin':'*'} });
     await route.fulfill({ json:route.request().url().endsWith('annotations.json') ? annos : remote, headers:{'access-control-allow-origin':'*'} });
@@ -65,6 +86,7 @@ try {
   await page.locator('#open-import').click();
   await page.locator('#manifest-url').fill('https://fixture.example/manifest.json');
   await page.locator('.load-button').click();
+  await approveNetwork();
   await page.waitForFunction(() => document.querySelector('#collection-name').textContent === 'URLテスト');
   assert.equal(await page.locator('.tile').count(),24);
   await page.locator('.tile').first().click();
@@ -92,17 +114,19 @@ try {
   local.items.push(second);
   await page.locator('#open-import').click();
   await page.locator('#manifest-file').setInputFiles({ name:'local-two-pages.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(local)) });
+  await approveNetwork();
   await page.waitForFunction(() => document.querySelectorAll('.tile').length === 2);
   await page.locator('.tile').nth(1).click();
   await page.locator('#open-mirador').click();
-  await page.locator('.mirador-selected-region').waitFor({ state:'visible',timeout:45000 });
-  await page.waitForFunction(() => document.querySelector('.mirador-selected-region')?.getBoundingClientRect().width > 50);
-  assert.ok(await page.locator('#mirador-container').getByText('SECOND PAGE',{ exact:false }).count() > 0);
-  const overlay = await page.locator('.mirador-selected-region').boundingBox();
+  await page.frameLocator('#mirador-container iframe').locator('.mirador-selected-region').waitFor({ state:'visible',timeout:45000 });
+  await viewerFrame().waitForFunction(() => document.querySelector('.mirador-selected-region')?.getBoundingClientRect().width > 50);
+  assert.ok(await page.frameLocator('#mirador-container iframe').getByText('SECOND PAGE',{ exact:false }).count() > 0);
+  const overlay = await page.frameLocator('#mirador-container iframe').locator('.mirador-selected-region').boundingBox();
   assert.ok(overlay.width > 50 && overlay.height > 50);
   await page.screenshot({ path:'/private/tmp/annotation-atlas-mirador-local.png' });
   await page.locator('[data-close="mirador-dialog"]').click();
+  assert.equal(trackerRequests,0);
   assert.deepEqual(errors,[]);
   console.log('Browser checks passed: layout, search, highlights, detail navigation, file/URL imports, external annotations, error states, safe HTML, mobile.');
   console.log('Demo images loaded:', await page.locator('.tile img').evaluateAll(imgs => imgs.filter(img => img.complete && img.naturalWidth > 0).length));
-} finally { await browser.close(); }
+} catch(error) { await page.screenshot({path:'/private/tmp/annotation-atlas-security-failure.png'}); console.log(consoleErrors.slice(-15)); throw error; } finally { await browser.close(); }

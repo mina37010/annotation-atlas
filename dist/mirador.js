@@ -1,104 +1,59 @@
-import { httpURL, idOf } from './iiif.js';
+import { createNetwork, publicURL, validateJSON, InputError } from './security.js';
 
-let library;
-function loadLibrary() {
-  if (window.Mirador) return Promise.resolve(window.Mirador);
-  if (!library) library = new Promise((resolve, reject) => {
-    const script = document.createElement('script'); script.src = './vendor/mirador.min.js';
-    script.onload = () => resolve(window.Mirador);
-    script.onerror = () => { script.remove(); library = null; reject(new Error('Miradorを読み込めません。')); };
-    document.head.append(script);
+export function safeInfo(json, url) {
+  validateJSON(json);
+  const width = Number(json.width), height = Number(json.height);
+  if (![width, height].every(n => Number.isInteger(n) && n > 0 && n <= 100000)) throw new InputError('Image Serviceの寸法が不正です。');
+  const id = url.replace(/\/info\.json(?:\?.*)?$/, '');
+  const v3 = json.type === 'ImageService3' || String(json['@context']).includes('/image/3/');
+  const info = v3 ? { '@context':'http://iiif.io/api/image/3/context.json', id, type:'ImageService3', protocol:'http://iiif.io/api/image', profile:'level1', width, height } : { '@context':'http://iiif.io/api/image/2/context.json', '@id':id, protocol:'http://iiif.io/api/image', profile:['http://iiif.io/api/image/2/level1.json'], width, height };
+  if (Array.isArray(json.tiles)) info.tiles = json.tiles.slice(0,4).flatMap(tile => {
+    if (!(Number.isInteger(tile.width) && tile.width > 0 && tile.width <= 2048)) return [];
+    const scaleFactors = Array.isArray(tile.scaleFactors) ? tile.scaleFactors.filter(n => Number.isInteger(n) && n > 0 && n <= 65536).slice(0,32) : [];
+    return scaleFactors.length ? [{ width:tile.width, height:Number.isInteger(tile.height) && tile.height > 0 && tile.height <= 2048 ? tile.height : tile.width, scaleFactors }] : [];
   });
-  return library;
+  if (Array.isArray(json.sizes)) info.sizes = json.sizes.slice(0,16).filter(size => Number.isInteger(size.width) && Number.isInteger(size.height) && size.width > 0 && size.height > 0 && size.width <= width && size.height <= height).map(({width,height})=>({width,height}));
+  return info;
 }
 
-function absolutize(value, base, key = '') {
-  if (typeof value === 'string') return ['id', '@id', 'on', 'target', 'source', 'full', 'otherContent', 'annotations', 'thumbnail'].includes(key) ? httpURL(value, base) || value : value;
-  if (Array.isArray(value)) return value.map(entry => absolutize(entry, base, key));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, absolutize(entry, base, name)]));
-  return value;
-}
-
-export async function openMirador({ manifest, baseURL, item, container, onViewer, signal }) {
-  const Mirador = await loadLibrary();
-  if (signal?.aborted) return null;
-  const json = absolutize(manifest, baseURL);
-  const manifestId = idOf(json) || 'urn:annotation-atlas:local-manifest';
-  const v3 = json.type === 'Manifest';
-  json[v3 ? 'id' : '@id'] = manifestId;
-  json['@context'] ||= v3 ? 'http://iiif.io/api/presentation/3/context.json' : 'http://iiif.io/api/presentation/2/context.json';
-  if (v3) {
-    for (const [ci, c] of (json.items || []).entries()) {
-      for (const [pi, page] of (c.items || []).entries()) {
-        page.id ||= `${manifestId}/page/${ci}/${pi}`;
-        for (const [ai, anno] of (page.items || []).entries()) {
-          anno.id ||= `${page.id}/annotation/${ai}`;
-          const bodies = Array.isArray(anno.body) ? anno.body : [anno.body];
-          for (const body of bodies) {
-            const service = Array.isArray(body?.service) ? body.service[0] : body?.service;
-            if (body && !idOf(body) && idOf(service)) body.id = `${idOf(service)}/full/${service.type === 'ImageService3' ? 'max' : 'full'}/0/default.jpg`;
-          }
-        }
-      }
-    }
-  }
-  const canvas = (json.items ?? json.sequences?.[0]?.canvases)?.[item.canvasIndex];
-  if (!canvas) throw new Error('該当ページが見つかりません。');
-  const canvasId = idOf(canvas) || item.canvas;
-  const windowId = 'atlas-mirador-window';
-  const initialized = new WeakMap();
-  const disposers = [];
-  let instance;
-  const plugin = {
-    target: 'OpenSeadragonViewer', mode: 'add',
-    component: function SelectedRegion({ viewer, canvasWorld }) {
-      if (!viewer || signal?.aborted) return null;
-      const current = canvasWorld?.canvasIds?.includes(canvasId);
-      let state = initialized.get(viewer);
-      if (!state) {
-        state = { overlay: null, focused: false, scheduled: false };
-        initialized.set(viewer, state);
-        const refresh = () => {
-          if (signal?.aborted || !viewer.world.getItemCount() || !state.active) return;
-          const [x, y, width, height] = item.canvasRegion;
-          const rect = (left, top, w, h) => Object.assign(viewer.viewport.getBounds().clone(), { x: left, y: top, width: w, height: h });
-          if (!state.overlay) {
-            state.overlay = document.createElement('div');
-            state.overlay.className = 'mirador-selected-region';
-            state.overlay.setAttribute('aria-label', '選択したAnnotationの領域');
-            viewer.addOverlay({ element: state.overlay, location: rect(x, y, width, height), checkResize: false });
-          }
-          if (!state.focused) {
-            state.focused = true;
-            // Mirador fits the full canvas after its tile-source promise resolves.
-            // Focus the selected region on the next frame, after that fit.
-            requestAnimationFrame(() => {
-              if (!signal?.aborted && state.active) viewer.viewport.fitBounds(rect(x - width * .3, y - height * .3, width * 1.6, height * 1.6), true);
-            });
-          }
-        };
-        state.refresh = refresh;
-        viewer.world.addHandler('add-item', refresh);
-        disposers.push(() => viewer.world.removeHandler('add-item', refresh));
-      }
-      state.active = Boolean(current);
-      if (!current && state.overlay) { viewer.removeOverlay(state.overlay); state.overlay = null; state.focused = false; }
-      if (!state.scheduled) { state.scheduled = true; requestAnimationFrame(() => { state.scheduled = false; state.refresh(); }); }
-      onViewer?.(viewer);
-      return null;
-    },
+export function openMirador({ manifest, origins, item, container, onViewer, onError, signal }) {
+  validateJSON(manifest);
+  const frame = document.createElement('iframe');
+  frame.title = 'Mirador'; frame.setAttribute('sandbox', 'allow-scripts'); frame.referrerPolicy = 'no-referrer';
+  frame.setAttribute('allow', "clipboard-read 'none'; clipboard-write 'none'; camera 'none'; microphone 'none'; geolocation 'none'");
+  const token = crypto.randomUUID(), nonce = crypto.randomUUID().replaceAll('-', '');
+  const scriptURL = new URL('./mirador-frame.js', location.href).href;
+  const networkController = new AbortController();
+  const network = createNetwork(origins, { signal: networkController.signal, maxRequests: 512, maxBytes: 128 * 1024 * 1024, duration: 300000 });
+  const services = manifest.items.flatMap(canvas => canvas.items.flatMap(page => page.items.flatMap(anno => anno.body.service.map(service => service.id))));
+  const prefixes = services.map(service => service.replace(/\/$/, '') + '/');
+  const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'`;
+  frame.srcdoc = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html,body,#viewer{height:100%;margin:0}body{font-family:system-ui,sans-serif}.mirador-selected-region{border:3px solid white;outline:2px solid #222;background:#ffffff15;pointer-events:none;box-sizing:border-box}</style></head><body><div id="viewer"></div><script nonce="${nonce}" src="${scriptURL.replaceAll('&','&amp;').replaceAll('"','&quot;')}"></script></body></html>`;
+  const pending = new Set(); let closed = false, ready = false, messages = 0;
+  const timer = setTimeout(() => { if (!closed && !ready) { onError?.('Miradorの読み込みがタイムアウトしました。'); close(); } }, 20000);
+  const message = async event => {
+    if (closed || event.source !== frame.contentWindow || event.origin !== 'null' || event.data?.token !== token) return;
+    if (++messages > 2048) { onError?.('Miradorの通信回数が上限を超えました。'); close(); return; }
+    const data = event.data;
+    if (data.type === 'viewer-ready') { if (!ready) { ready = true; clearTimeout(timer); onViewer?.(); } return; }
+    if (data.type === 'viewer-error') { onError?.('Miradorを開けません。'); close(); return; }
+    if (data.type !== 'viewer-request' || !Number.isSafeInteger(data.id) || data.id < 1 || pending.has(data.id) || pending.size >= 128) return;
+    pending.add(data.id);
+    try {
+      const url = publicURL(data.url);
+      if (!url || !prefixes.some(prefix => url.startsWith(prefix))) throw new InputError('未確認のImage Serviceを拒否しました。');
+      const image = data.image === true;
+      if (!image && !new URL(url).pathname.endsWith('/info.json')) throw new InputError('未確認のデータ形式を拒否しました。');
+      let result;
+      if (image) result = await network.bytes(url, { image: true });
+      else result = { data: new TextEncoder().encode(JSON.stringify(safeInfo(await network.json(url), url))), type:'application/json' };
+      if (!closed) frame.contentWindow.postMessage({type:'viewer-response',token,id:data.id,data:result.data.buffer,contentType:result.type}, '*', [result.data.buffer]);
+    } catch (error) { if (!closed) frame.contentWindow.postMessage({type:'viewer-response',token,id:data.id,error:'データを取得できません。'}, '*'); }
+    finally { pending.delete(data.id); }
   };
-  instance = Mirador.viewer({
-    id: container.id,
-    language: 'ja',
-    theme: { palette: { primary: { main: '#333333' }, secondary: { main: '#555555' } } },
-    workspaceControlPanel: { enabled: false },
-    workspace: { allowNewWindows: false, showZoomControls: true },
-    window: { allowClose: false, allowMaximize: false, sideBarOpen: false },
-    windows: [],
-  }, [plugin]);
-  // Supply the already loaded Manifest, including local JSON, instead of refetching its ID.
-  instance.store.dispatch(Mirador.actions.receiveManifest(manifestId, json));
-  instance.store.dispatch(Mirador.actions.addWindow({ id: windowId, manifestId, canvasId, canvasIndex: item.canvasIndex, thumbnailNavigationPosition: 'far-bottom' }));
-  return { instance, close() { disposers.forEach(dispose => dispose()); instance.unmount(); container.replaceChildren(); } };
+  const close = () => { if (closed) return; closed = true; clearTimeout(timer); networkController.abort(); removeEventListener('message', message); signal?.removeEventListener('abort', close); frame.remove(); };
+  addEventListener('message', message); signal?.addEventListener('abort', close, { once:true });
+  frame.addEventListener('load', () => { if (!closed) frame.contentWindow.postMessage({type:'viewer-init',token,manifest,item:{canvasIndex:item.canvasIndex,canvasRegion:item.canvasRegion}}, '*'); }, { once:true });
+  if (signal?.aborted) close(); else container.replaceChildren(frame);
+  return Promise.resolve({ close });
 }

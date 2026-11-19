@@ -1,10 +1,10 @@
-export async function imagePNG(url) {
-  const response = await fetch(url, { mode: 'cors', credentials: 'omit' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const blob = await response.blob();
+import { LIMITS } from './security.js';
+export async function imagePNG(url, images) {
+  const blob = await images.blob(url);
   if (blob.type === 'image/png') return blob;
   const bitmap = await createImageBitmap(blob);
   try {
+    if (bitmap.width * bitmap.height > LIMITS.imagePixels || bitmap.width > LIMITS.imageSide || bitmap.height > LIMITS.imageSide) throw new Error('画像の寸法が上限を超えています。');
     const canvas = document.createElement('canvas');
     canvas.width = bitmap.width; canvas.height = bitmap.height;
     const context = canvas.getContext('2d');
@@ -14,10 +14,10 @@ export async function imagePNG(url) {
   } finally { bitmap.close(); }
 }
 
-export function copyImage(url) {
+export function copyImage(url, images) {
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('このブラウザでは画像をコピーできません。');
   // Start the clipboard write during the click, retaining Safari's user activation.
-  const png = imagePNG(url);
+  const png = imagePNG(url, images);
   png.catch(() => {});
   return navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
 }

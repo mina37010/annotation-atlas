@@ -1,3 +1,5 @@
+import { LIMITS, InputError, validateJSON, parseJSON, collectOrigins, createNetwork } from './security.js';
+import { createImages } from './images.js';
 import { parseManifest, demoManifest, httpURL, idOf } from './iiif.js';
 import { masonryLayout } from './layout.js';
 import { copyImage, copyURL } from './clipboard.js';
@@ -11,11 +13,12 @@ function highlight(element, text) {
   element.replaceChildren();
   // Match whole normalized queries while preserving original glyphs.
   if (!query.trim()) { element.textContent = text; return; }
-  const terms = query.trim().split(/\s+/u).map(normalize);
+  const terms = [...new Set(query.trim().split(/\s+/u).map(normalize))];
   const points = Array.from(text), normalized = [], offsets = [];
   points.forEach((char, i) => { const normalizedChar = normalize(char); normalized.push(normalizedChar); for (let j = 0; j < normalizedChar.length; j++) offsets.push(i); });
   const haystack = normalized.join(''), ranges = [];
-  for (const term of terms) { let start = 0, found; while ((found = haystack.indexOf(term, start)) !== -1) { ranges.push([offsets[found], offsets[found + term.length - 1] + 1]); start = found + Math.max(1, term.length); } }
+  const maxMatches = element.id === 'detail-text' ? 100 : 8;
+  for (const term of terms) { let start = 0, found; while (ranges.length < maxMatches && (found = haystack.indexOf(term, start)) !== -1) { ranges.push([offsets[found], offsets[found + term.length - 1] + 1]); start = found + Math.max(1, term.length); } }
   ranges.sort((a,b) => a[0]-b[0]);
   const merged = [];
   for (const range of ranges) { const last = merged.at(-1); if (last && range[0] <= last[1]) last[1] = Math.max(last[1],range[1]); else merged.push([...range]); }
@@ -28,17 +31,18 @@ function makeTile(item, index, width, height) {
   const button = document.createElement('button'); button.className = 'tile'; button.style.width = width + 'px'; button.style.height = height + 'px';
   button.setAttribute('aria-label', item.text || `${item.page} のAnnotation領域`);
   button.addEventListener('click', () => showDetail(index));
-  const img = document.createElement('img'); img.src = item.url; img.alt = ''; img.loading = index < 12 ? 'eager' : 'lazy'; img.decoding = 'async';
+  const img = document.createElement('img'); collection.images.set(img, item.url, index < 12); img.alt = ''; img.loading = index < 12 ? 'eager' : 'lazy'; img.decoding = 'async';
   img.addEventListener('error', () => { img.hidden = true; const message = document.createElement('span'); message.className = 'image-failure'; const icon = document.createElement('strong'); icon.textContent = '◫'; message.append(icon, document.createTextNode('画像を取得できません')); button.append(message); }, { once: true });
   const caption = document.createElement('span'); caption.className = 'tile-caption'; highlight(caption, item.text);
   button.append(img, caption); return button;
 }
 function render() {
   if (!collection) return;
-  const terms = normalize(query.trim()).split(/\s+/u).filter(Boolean);
-  filtered = collection.crops.filter(item => terms.every(term => normalize(item.text).includes(term)));
+  const terms = [...new Set(normalize(query.trim()).split(/\s+/u).filter(Boolean))];
+  filtered = collection.crops.filter(item => { const text = normalize(item.text); return terms.every(term => text.includes(term)); });
   $('count').textContent = terms.length ? `${filtered.length.toLocaleString()} / ${collection.crops.length.toLocaleString()} images` : `${filtered.length.toLocaleString()} images`;
   const gallery = $('gallery'); gallery.classList.toggle('show-text', showText); gallery.classList.toggle('searching', Boolean(terms.length));
+  collection.images.clearObservers();
   gallery.replaceChildren();
   $('empty').hidden = filtered.length > 0;
   $('empty-message').textContent = collection.crops.length ? '一致するAnnotationがありません' : '切り抜き可能なAnnotationがありません';
@@ -66,7 +70,7 @@ function showDetail(index) {
   $('copy-image').disabled = false; $('copy-url').disabled = false;
   selected = Math.max(0,Math.min(filtered.length - 1,index));
   const item = filtered[selected];
-  $('detail-img').src = item.fullURL; $('detail-img').alt = item.text || item.page;
+  collection.images.set($('detail-img'), item.fullURL, true); $('detail-img').alt = item.text || item.page;
   $('detail-page').textContent = item.page;
   highlight($('detail-text'), item.text || '本文なし');
   $('detail-region').textContent = item.region.join(', ');
@@ -77,12 +81,17 @@ function showDetail(index) {
 }
 async function load(manifest, baseURL, sample = false, token = ++generation) {
   controller?.abort(); controller = new AbortController(); const signal = controller.signal;
-  $('import-dialog').close(); $('detail-dialog').close();
+  $('import-dialog').close(); $('detail-dialog').close(); $('mirador-dialog').close();
   setStatus('Annotationを読み込み中…', { loading: true });
   try {
-    const result = await parseManifest(manifest, { baseURL: httpURL(idOf(manifest), baseURL) || baseURL, signal, onProgress: (done,total) => { if (token === generation) setStatus(`Annotationを読み込み中　${done} / ${total} Canvas`, { loading: true }); } });
+    validateJSON(manifest);
+    const origins = collectOrigins(manifest, baseURL);
+    if (!sample && !await confirmOrigins(origins, signal)) { if (token === generation) setStatus('読み込みをキャンセルしました'); return; }
+    if (token !== generation || signal.aborted) return;
+    const result = await parseManifest(manifest, { baseURL: httpURL(idOf(manifest), baseURL) || baseURL, allowedOrigins: origins, signal, onProgress: (done,total) => { if (token === generation) setStatus(`Annotationを読み込み中　${done} / ${total} Canvas`, { loading: true }); } });
     if (token !== generation) return;
-    collection = { ...result, sourceManifest: manifest, sourceBase: httpURL(idOf(manifest), baseURL) || baseURL }; query = ''; $('search').value = '';
+    collection?.images.dispose();
+    collection = { ...result, origins, images: createImages(origins) }; query = ''; $('search').value = '';
     $('collection-name').textContent = result.title;
     $('sample-badge').hidden = !sample;
     $('attribution').textContent = result.attribution || '';
@@ -95,6 +104,20 @@ async function load(manifest, baseURL, sample = false, token = ++generation) {
     document.title = `${result.title} · Annotation Atlas`;
     render();
   } catch (error) { if (token === generation && error.name !== 'AbortError') setStatus(error.message, { error: true }); }
+}
+function confirmOrigins(origins, signal) {
+  if (!origins.length) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const dialog = $('network-dialog');
+    const finish = accepted => { cleanup(); if (dialog.open) dialog.close(); resolve(accepted); };
+    const accept = () => finish(true), cancel = () => finish(false);
+    const cleanup = () => { $('approve-network').removeEventListener('click', accept); dialog.removeEventListener('close', cancel); signal.removeEventListener('abort', cancel); };
+    $('network-origins').replaceChildren(...origins.map(origin => { const li = document.createElement('li'); li.textContent = origin; return li; }));
+    $('approve-network').addEventListener('click', accept);
+    dialog.addEventListener('close', cancel, { once: true });
+    signal.addEventListener('abort', cancel, { once: true });
+    dialog.showModal();
+  });
 }
 function openImport() { $('import-error').hidden = true; $('import-dialog').showModal(); }
 $('open-import').addEventListener('click', openImport);
@@ -109,17 +132,15 @@ $('import-form').addEventListener('submit', async event => {
   controller?.abort(); controller = new AbortController();
   $('import-dialog').close(); setStatus('Manifestを読み込み中…', { loading: true });
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const manifest = await response.json();
+    const manifest = await createNetwork([new URL(url).origin], { signal: controller.signal }).json(url);
     if (token !== generation) return;
-    await load(manifest, response.url || url, false, token);
+    await load(manifest, url, false, token);
   } catch (error) { if (token === generation && error.name !== 'AbortError') setStatus(`Manifestを取得できません。URL・公開設定・CORSを確認してください。${error.message}`, { error: true }); }
 });
 async function readFile(file) {
   if (!file) return;
   const token = ++generation; controller?.abort();
-  try { if (file.size > 100 * 1024 * 1024) throw new Error('100MB以下のJSONファイルを選択してください。'); const manifest = JSON.parse(await file.text()); if (token === generation) await load(manifest, httpURL(idOf(manifest)), false, token); }
+  try { if (file.size > LIMITS.jsonBytes) throw new InputError('8MB以下のJSONファイルを選択してください。'); const manifest = parseJSON(await file.text()); if (token === generation) await load(manifest, httpURL(idOf(manifest)), false, token); }
   catch (error) { if (token === generation) { $('import-error').textContent = `JSONファイルを読み込めません。${error.message}`; $('import-error').hidden = false; if (!$('import-dialog').open) $('import-dialog').showModal(); } }
   $('manifest-file').value = '';
 }
@@ -129,7 +150,7 @@ const drop = $('file-drop');
 ['dragleave','drop'].forEach(name => drop.addEventListener(name, event => { event.preventDefault(); drop.classList.remove('dragging'); }));
 drop.addEventListener('drop', event => readFile(event.dataTransfer.files[0]));
 $('demo').addEventListener('click', () => load(demoManifest(), '', true));
-$('search').addEventListener('input', event => { query = event.target.value; scheduleRender(); });
+$('search').addEventListener('input', event => { query = event.target.value.slice(0, 256); scheduleRender(); });
 $('clear-search').addEventListener('click', () => { query = ''; $('search').value = ''; render(); $('search').focus(); });
 $('show-text').addEventListener('change', event => { showText = event.target.checked; $('gallery').classList.toggle('show-text', showText); });
 $('size').addEventListener('input', event => { size = Number(event.target.value); scheduleRender(); });
@@ -144,7 +165,7 @@ async function copySelected(kind) {
   button.disabled = true; status.hidden = false; status.dataset.error = 'false';
   status.textContent = kind === 'image' ? '画像をコピー中…' : 'URLをコピー中…';
   try {
-    await (kind === 'image' ? copyImage(item.fullURL) : copyURL(item.fullURL));
+    await (kind === 'image' ? copyImage(item.fullURL, collection.images) : copyURL(item.fullURL));
     if (revision === detailRevision) status.textContent = kind === 'image' ? '画像をコピーしました' : '画像URLをコピーしました';
   } catch (error) {
     if (revision === detailRevision) {
@@ -163,7 +184,7 @@ $('open-mirador').addEventListener('click', async () => {
   $('mirador-status').textContent = 'Miradorを読み込み中…'; $('mirador-status').hidden = false;
   $('mirador-dialog').showModal();
   try {
-    const session = await openMirador({ manifest: collection.sourceManifest, baseURL: collection.sourceBase, item, container: $('mirador-container'), signal, onViewer: () => { if (!signal.aborted) $('mirador-status').hidden = true; } });
+    const session = await openMirador({ manifest: collection.viewerManifest, origins: collection.origins, item, container: $('mirador-container'), signal, onViewer: () => { if (!signal.aborted) $('mirador-status').hidden = true; }, onError: message => { if (!signal.aborted) { $('mirador-status').hidden = false; $('mirador-status').textContent = message; } } });
     if (signal.aborted) session?.close(); else miradorSession = session;
   } catch (error) { if (!signal.aborted) { $('mirador-status').hidden = false; $('mirador-status').textContent = `Miradorを開けません。${error.message}`; } }
 });
